@@ -110,6 +110,7 @@ class IBOrder(OrderBase, ibapi.order.Order):
         tojoin.append('OrderType: {}'.format(self.orderType))
         tojoin.append('Tif (Time in Force): {}'.format(self.tif))
         tojoin.append('GoodTillDate: {}'.format(self.goodTillDate))
+        tojoin.append('ocaGroup: {}'.format(self.ocaGroup))
         return '\n'.join(tojoin)
 
     # Map backtrader order types to the ib specifics
@@ -185,21 +186,21 @@ class IBOrder(OrderBase, ibapi.order.Order):
             tif = 'GTC'  # Good til cancelled
         elif isinstance(self.valid, (datetime, date)):
             tif = 'GTD'  # Good til date
-            self.goodTillDate = bytes(self.valid.strftime('%Y%m%d %H:%M:%S'))
+            self.goodTillDate = bytes(self.valid.strftime('%Y%m%d-%H:%M:%S'))
         elif isinstance(self.valid, (timedelta,)):
             if self.valid == self.DAY:
                 tif = 'DAY'
             else:
                 tif = 'GTD'  # Good til date
                 valid = datetime.now() + self.valid  # .now, using localtime
-                self.goodTillDate = bytes(valid.strftime('%Y%m%d %H:%M:%S'))
+                self.goodTillDate = bytes(valid.strftime('%Y%m%d-%H:%M:%S'))
 
         elif self.valid == 0:
             tif = 'DAY'
         else:
             tif = 'GTD'  # Good til date
             valid = num2date(self.valid)
-            self.goodTillDate = bytes(valid.strftime('%Y%m%d %H:%M:%S'))
+            self.goodTillDate = bytes(valid.strftime('%Y%m%d-%H:%M:%S'))
 
         self.tif = bytes(tif)
 
@@ -311,7 +312,24 @@ class IBBroker(with_metaclass(MetaIBBroker, BrokerBase)):
         position = self.ib.getposition(data.tradecontract, clone=clone)
         logger.info(f"getposition: {position}")
         return position
+    
+    def get_open_orders(self,sym = None):
+        '''wrapper to get the orders from turnkeyGetOrders function in ibstore
+        can pass sym = 'LE' for example to only get LE orders
+        '''
+        orders_dict = {}
+        orders_dict =self.ib.turnkeyGetOrders(sym)
+        return orders_dict
+    #Chapman edit @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+    def cancel_by_id(self, id):
+        try:
+            self.ib.cancelOrder(id)
+        except(ValueError, KeyError):
+            print('order may have already been cancelled or filled')
+        except:
+            raise
 
+    
     def cancel(self, order):
         try:
             o = self.orderbyid[order.orderId]
@@ -335,10 +353,15 @@ class IBBroker(with_metaclass(MetaIBBroker, BrokerBase)):
         order.submit(self)
 
         # ocoize if needed
-        if order.oco is None:  # Generate a UniqueId
+        #if order.oco is None:  # Generate a UniqueId        original
+        if order.ocaGroup is None:  # Generate a UniqueId
             order.ocaGroup = bytes(uuid.uuid4())
         else:
-            order.ocaGroup = self.orderbyid[order.oco.orderId].ocaGroup
+            pass
+            #print(order.ocaGroup)
+            #order.ocaGroup = self.orderbyid[order.oco.orderId].ocaGroup
+            #order.ocaGroup = self.orderbyid[order.oco].ocaGroup
+            
 
         self.orderbyid[order.orderId] = order
         self.ib.placeOrder(order.orderId, order.data.tradecontract, order)
@@ -488,9 +511,18 @@ class IBBroker(with_metaclass(MetaIBBroker, BrokerBase)):
 
     def push_commissionreport(self, cr):
         with self._lock_orders:
+
             try:
                 ex = self.executions.pop(cr.execId)
                 oid = ex.orderId
+                '''
+                when multiple transactions happen in the same bar this throws
+                an error if the correct id isn't the first one received.
+                under normal circumstances probably isn't really a problem
+                '''
+                #print('oid is : {} ' .format(oid))
+                #print('the following is the self.orderbyid variable:')
+                #print(self.orderbyid[oid])
                 order = self.orderbyid[oid]
                 ostatus = self.ordstatus[oid].pop(ex.cumQty)
 
@@ -519,13 +551,18 @@ class IBBroker(with_metaclass(MetaIBBroker, BrokerBase)):
                 # Use the actual time provided by the execution object
                 # The report from TWS is in actual local time, not the data's tz
                 #dt = date2num(datetime.strptime(ex.time, '%Y%m%d  %H:%M:%S'))
-                dt_array = [] if ex.time == None else ex.time.split(" ")
+                dt_array = [] if ex.time == None else ex.time.split("-")
                 if dt_array and len(dt_array) > 1:
                   dt_array.pop()
-                  ex_time = " ".join(dt_array)
-                  dt = date2num(datetime.strptime(ex_time, '%Y%m%d %H:%M:%S'))
+                  ex_time = "-".join(dt_array)
+                  #Chapman edit add an additional space between the date and time group
+                  #previously 
+                  #dt = date2num(datetime.strptime(ex_time, '%Y%m%d %H:%M:%S'))
+                  dt = date2num(datetime.strptime(ex_time, '%Y%m%d  %H:%M:%S'))
                 else:
-                  dt = date2num(datetime.strptime(ex.time, '%Y%m%d %H:%M:%S %A'))
+                  #previously 
+                  #dt = date2num(datetime.strptime(ex.time, '%Y%m%d %H:%M:%S %A'))
+                  dt = date2num(datetime.strptime(ex.time, '%Y%m%d  %H:%M:%S'))
 
                 # Need to simulate a margin, but it plays no role, because it is
                 # controlled by a real broker. Let's set the price of the item
@@ -546,6 +583,7 @@ class IBBroker(with_metaclass(MetaIBBroker, BrokerBase)):
                 if oid not in self.tonotify:  # Lock needed
                     self.tonotify.append(oid)
             except Exception as e:
+                print(cr)
                 logger.exception(f"Exception: {e}")
 
     def push_portupdate(self):
