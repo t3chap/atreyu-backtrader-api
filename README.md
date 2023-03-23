@@ -5,6 +5,8 @@ Currently `backtrader` has a built-in integration for Interactive Brokers (IB) [
 
 This project re-worked the orginal integration and created a pluggable version allowing `backtrader` to use the latest IB API.
 
+This package has some added orders functionality I needed to be able to manage orders better in a production system. I also have updated to work with changes that IB has made to the API which broke some data functions, primarily because of date/time format changes.
+
 To start trading follow the steps below:
 
 1.	Open an account with IB 
