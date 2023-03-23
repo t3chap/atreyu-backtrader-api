@@ -208,7 +208,7 @@ class HistBar(object):
         self.low = bar.low
         self.close = bar.close
         self.volume = bar.volume
-        self.wap = bar.wap
+        #self.wap = bar.wap
         self.count = bar.barCount
 
     def __str__(self):
@@ -324,7 +324,7 @@ class IBApi(EWrapper, EClient):
         EWrapper.__init__(self)
         self.cb = cb
         self._debug = _debug
-
+        
     @logibmsg
     def currentTime(self, time):
         """ Server's current time. This method will receive IB server's system
@@ -400,14 +400,34 @@ class IBApi(EWrapper, EClient):
     @logibmsg
     def openOrder(self, orderId, contract, order, orderState):
         """This function is called to feed in open orders.
-
         orderID: OrderId - The order ID assigned by TWS. Use to cancel or
             update TWS order.
         contract: Contract - The Contract class attributes describe the contract.
         order: Order - The Order class gives the details of the open order.
         orderState: OrderState - The orderState class includes attributes Used
             for both pre and post trade margin and commission data."""
-        self.cb.openOrder(OpenOrderMsg(orderId, contract, order, orderState))
+            
+        message = {
+            'OrderId': orderId, 
+            'Symbol': contract.symbol, 
+            'localSymbol': contract.localSymbol,
+            'Exchange': contract.exchange,
+            'Type': contract.secType,
+            'LastDt': contract.lastTradeDateOrContractMonth,
+            'Action': order.action,
+            'Quantity': order.totalQuantity,
+            'OrderType': order.orderType,
+            'LimitPrice': order.lmtPrice,
+            'StopPrice': order.auxPrice,
+            'Account': order.account,
+            'GoodTill' :order.goodTillDate, 
+            'Order': order
+            }
+                
+        #print('calling IBApi version of openOrder')
+        #print(message)
+        self.cb.openOrder(message)
+        #self.cb.openOrder(OpenOrderMsg(orderId, contract, order, orderState))
 
     @logibmsg
     def openOrderEnd(self):
@@ -662,6 +682,7 @@ class IBStore(with_metaclass(MetaSingleton, object)):
         self._lock_pos = threading.Lock()  # sync account updates
         self._lock_notif = threading.Lock()  # sync access to notif queue
         self._updacclock = threading.Lock()  # sync account updates
+        self._lock_orders = threading.Lock() #sync order updates
 
         # Account list received
         self._event_managed_accounts = threading.Event()
@@ -694,6 +715,8 @@ class IBStore(with_metaclass(MetaSingleton, object)):
         self.port_update = False  # indicate whether to signal to broker
 
         self.positions = collections.defaultdict(Position)  # actual positions
+        
+        self.orders = collections.defaultdict(OpenOrderMsg) # orders
 
         self._tickerId = itertools.count(self.REQIDBASE)  # unique tickerIds
         self.orderid = None  # next possible orderid (will be itertools.count)
@@ -703,7 +726,12 @@ class IBStore(with_metaclass(MetaSingleton, object)):
         self.managed_accounts = list()  # received via managedAccounts
 
         self.notifs = queue.Queue()  # store notifications for cerebro
+        #Chapman edits @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+        self.orderq = queue.Queue()
+        self.receive_order_complete = False
 
+
+        #Chapman edits @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
         # Use the provided clientId or a random one
         if self.p.clientId is None:
             self.clientId = random.randint(1, pow(2, 16) - 1)
@@ -1995,13 +2023,20 @@ class IBStore(with_metaclass(MetaSingleton, object)):
     def placeOrder(self, orderid, contract, order):
         '''Proxy to placeOrder'''
         self.conn.placeOrder(orderid, contract, order)
+
     
     def openOrder(self, msg):
         '''Receive the event ``openOrder`` events'''
+        #print('ibbroker openOprder message follows:....')
+        #print(msg)
+        self.orderq.put(msg)
+        # return msg
         self.broker.push_orderstate(msg)
+        #return msg
     
     def openOrderEnd(self):
         # TODO: Add event to manage order requests 
+        self.receive_order_complete = True
         logger.debug(f"openOrderEnd")
     
     def execDetails(self, reqId, contract, execution):
@@ -2236,3 +2271,34 @@ class IBStore(with_metaclass(MetaSingleton, object)):
                 return self.acc_cash[account]
             except KeyError:
                 pass
+            
+    def turnkeyGetOrders(self, sym=None):
+         j = 0
+         self.orderq.queue.clear()
+         self.receive_order_complete = False           
+         self.conn.reqAllOpenOrders()  
+         time.sleep(.25) #provide time for the api to respond
+         while self.receive_order_complete == False:
+            if j > 10:
+                self.conn.reqAllOpenOrders()
+                time.sleep(1)
+                break
+            time.sleep(.1)
+            #print('orders not here yet.....')
+            j += 1
+            
+            if j > 12:
+                break
+         if self.receive_order_complete == True:  
+            olist = list(self.orderq.queue)
+            #odict = dict(olist)
+            #print(odict)
+            odict = {i:olist[i] for i in range(len(olist))}
+            #print('final orders from turnkeyGetOrders:')
+            #print(odict)
+            if sym: # a symbol is set
+                #filter for self.sym if it is set
+                odict = {k: v for k, v in odict.items() if v.get('Symbol') == sym}
+            return odict
+         else:
+            print('never received final message that orders had been gathered')
