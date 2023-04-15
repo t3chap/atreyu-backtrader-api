@@ -363,7 +363,18 @@ class IBApi(EWrapper, EClient):
         """This is called after a batch updateAccountValue() and
         updatePortfolio() is sent."""
         self.cb.accountDownloadEnd(accountName)
-
+        
+    @logibmsg        
+    def accountSummaryEnd(self, reqId:int):
+        """This method is called once all account summary data for a
+        given request are received."""
+        self.cb.accountSummaryEnd(reqId)
+        
+    def accountSummary(self, reqId, account, tag, value, currency):
+        
+        self.cb.accountSummary(reqId, account, tag, value, currency)
+        
+        
     @logibmsg
     def updateAccountValue(self, key, val, currency, accountName):
         """ This function is called only when ReqAccountUpdates on
@@ -432,7 +443,7 @@ class IBApi(EWrapper, EClient):
     @logibmsg
     def openOrderEnd(self):
         """This is called at the end of a given request for open orders."""
-        logger.debug(f"openOrderEnd")
+        logger.debug("openOrderEnd")
         self.cb.openOrderEnd()
 
     @logibmsg
@@ -727,8 +738,14 @@ class IBStore(with_metaclass(MetaSingleton, object)):
 
         self.notifs = queue.Queue()  # store notifications for cerebro
         #Chapman edits @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+        self.errorq = queue.Queue()
         self.orderq = queue.Queue()
         self.receive_order_complete = False
+        self.acctq = queue.Queue()
+        self.receive_acct_complete = False
+        self.accounts = {}
+        self.last_order_id = None
+        self.m = 0
 
 
         #Chapman edits @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
@@ -957,6 +974,11 @@ class IBStore(with_metaclass(MetaSingleton, object)):
         if msg.errorCode is None:
             # Usually received as an error in connection of just before disconn
             pass
+        
+        elif msg.errorCode in [103]:
+            logger.warn("Duplicate order ID ")
+            self.errorq.put(msg.errorCode)
+            
         elif msg.errorCode in [200, 203, 162, 320, 321, 322]:
             # cdetails 200 security not found, notify over right queue
             # cdetails 203 security not allowed for acct
@@ -1087,8 +1109,13 @@ class IBStore(with_metaclass(MetaSingleton, object)):
         return next(self._tickerId)
 
     def nextValidId(self, orderId):
+        #super().nextValidId(orderId)
+        self.orderid = orderId
+        self.last_order_id = orderId
+        print('ibstore >> last order id: {}' .format(orderId))
         # Create a counter from the TWS notified value to apply to orders
         self.orderid = itertools.count(orderId)
+        return orderId
 
     def nextOrderId(self):
         # Get the next ticker using next on the itertools.count made with the
@@ -2039,6 +2066,12 @@ class IBStore(with_metaclass(MetaSingleton, object)):
         self.receive_order_complete = True
         logger.debug(f"openOrderEnd")
     
+    def accountSummaryEnd(self, reqId=1):
+        """This method is called once all account summary data for a
+        given request are received."""
+        self.receive_acct_complete = True
+        logger.debug(f"accountSummaryEnd")
+    
     def execDetails(self, reqId, contract, execution):
         '''Receive execDetails'''
         execution.shares = float(execution.shares)
@@ -2084,6 +2117,17 @@ class IBStore(with_metaclass(MetaSingleton, object)):
 
     def positionEnd(self):
         logger.debug(f"positionEnd")
+        
+    def reqIds(self, numIds:int):
+        """Call this function to request from TWS the next valid ID that
+        can be used when placing an order.  After calling this function, the
+        nextValidId() event will be triggered, and the id returned is that next
+        valid ID. That ID will reflect any autobinding that has occurred (which
+        generates new IDs and increments the next valid ID therein).
+
+        numIds:int - deprecated"""
+
+        self.conn.reqIds(-1)
 
     def reqAccountUpdates(self, subscribe=True, account=None):
         '''Proxy to reqAccountUpdates
@@ -2232,6 +2276,7 @@ class IBStore(with_metaclass(MetaSingleton, object)):
             try:
                 return self.acc_value[account]
             except KeyError:
+                print('no account value found for {}' .format(account))
                 pass
 
         return float()
@@ -2271,6 +2316,17 @@ class IBStore(with_metaclass(MetaSingleton, object)):
                 return self.acc_cash[account]
             except KeyError:
                 pass
+
+    def accountSummary(self,  reqId, account, tag, value, currency):
+        self.accounts[self.m] = {
+            'Account' : account,
+            #'NetLiquidation' : tag,
+            'Value': value,
+            'Currency' : currency,
+            }
+        self.acctq.put(self.accounts[self.m])
+        self.m += 1 
+
             
     def turnkeyGetOrders(self, sym=None):
          j = 0
@@ -2302,3 +2358,34 @@ class IBStore(with_metaclass(MetaSingleton, object)):
             return odict
          else:
             print('never received final message that orders had been gathered')
+            
+    def turnkeyGetAccountVals(self):
+        j = 0
+        self.acctq.queue.clear()
+        self.receive_acct_complete = False
+        self.conn.reqAccountSummary(reqId=1,groupName='All',tags='NetLiquidation')
+        time.sleep(.15)
+        while self.receive_acct_complete == False:
+            if j > 10:
+                self.conn.reqAccountSummary(reqId=1,groupName='All',tags='NetLiquidation')
+                time.sleep(1)
+                break
+            time.sleep(.1)
+            print('account values not here yet.....')
+            j += 1
+            
+            if j > 12:
+                break
+        if self.receive_acct_complete == True:
+            #print('account information should have arrived...')
+            alist = list(self.acctq.queue)
+            #print(alist)
+            adict = {i:alist[i] for i in range(len(alist))}
+            return adict            
+            #retvalue = self.finalize_accounts()
+            #return retvalue
+            #self.ordersdf = self.orders_to_df()
+            #return self.ordersdf   
+            
+    def turnkey_get_last_id(self):
+        return self.last_order_id
