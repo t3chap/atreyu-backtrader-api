@@ -303,8 +303,8 @@ class IBBroker(with_metaclass(MetaIBBroker, BrokerBase)):
         logger.debug(f"get_acc_cash: {self.cash}")
         return self.cash
 
-    def getvalue(self, datas=None):
-        self.value = self.ib.get_acc_value()
+    def getvalue(self, datas=None, account = None):
+        self.value = self.ib.get_acc_value(account = None)
         logger.debug(f"getvalue: {self.value}")
         return self.value
 
@@ -313,6 +313,20 @@ class IBBroker(with_metaclass(MetaIBBroker, BrokerBase)):
         logger.info(f"getposition: {position}")
         return position
     
+    def get_next_order_id(self):
+        nextid = self.ib.nextOrderId()
+        return nextid
+    
+    def get_high_order_id(self):
+        self.ib.reqIds(-1)
+        
+        #self.ib.orderId
+        #nextid= self.ib.nextOrderId()
+        nextid= self.ib.turnkey_get_last_id()
+        return nextid
+        
+        
+        
     def get_open_orders(self,sym = None):
         '''wrapper to get the orders from turnkeyGetOrders function in ibstore
         can pass sym = 'LE' for example to only get LE orders
@@ -328,7 +342,10 @@ class IBBroker(with_metaclass(MetaIBBroker, BrokerBase)):
             print('order may have already been cancelled or filled')
         except:
             raise
-
+    def getacctvalues(self, account=None):
+        self.value = self.ib.turnkeyGetAccountVals()
+        logger.debug(f"getvalue: {self.value}")
+        return self.value
     
     def cancel(self, order):
         try:
