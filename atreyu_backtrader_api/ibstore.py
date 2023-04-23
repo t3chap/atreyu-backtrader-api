@@ -45,6 +45,8 @@ from ibapi.wrapper import EWrapper
 from ibapi.contract import Contract
 from ibapi.ticktype import TickTypeEnum
 
+import telegram_ibbroker as ti
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -662,8 +664,8 @@ class IBStore(with_metaclass(MetaSingleton, object)):
         ('port', 7496),
         ('clientId', None),  # None generates a random clientid 1 -> 2^16
         ('broker_host', ''),
-        ('broker_request_port', 12345),
-        ('broker_subscribe_port', 12345),
+        ('broker_request_port', 12344),
+        ('broker_subscribe_port', 12344),
         ('broker_user_name', ''),
         ('broker_password', ''),
         ('notifyall', False),
@@ -745,6 +747,8 @@ class IBStore(with_metaclass(MetaSingleton, object)):
         self.receive_acct_complete = False
         self.accounts = {}
         self.last_order_id = None
+        self.receive_order_id_complete = False
+        self.receive_next_id_complete = False
         self.m = 0
 
 
@@ -796,6 +800,13 @@ class IBStore(with_metaclass(MetaSingleton, object)):
 
     
     def start(self, data=None, broker=None):
+        
+        try:
+            te = ti.TelegramEcho(self,'maythiswork')
+            te.run()
+        except:
+            raise
+            
         logger.info(f"START data: {data} broker: {broker}")
         self.reconnect(fromstart=True)  # reconnect should be an invariant
 
@@ -1113,6 +1124,7 @@ class IBStore(with_metaclass(MetaSingleton, object)):
         self.orderid = orderId
         self.last_order_id = orderId
         print('ibstore >> last order id: {}' .format(orderId))
+        self.receive_order_id_complete = True
         # Create a counter from the TWS notified value to apply to orders
         self.orderid = itertools.count(orderId)
         return orderId
@@ -2054,11 +2066,16 @@ class IBStore(with_metaclass(MetaSingleton, object)):
     
     def openOrder(self, msg):
         '''Receive the event ``openOrder`` events'''
-        #print('ibbroker openOprder message follows:....')
-        #print(msg)
-        self.orderq.put(msg)
+        print('ibbroker openOprder message follows:....')
+        print(msg)
+        
         # return msg
-        self.broker.push_orderstate(msg)
+        try:
+            if msg:
+                self.orderq.put(msg)
+                self.broker.push_orderstate(msg)
+        except:
+            print('there was an error in the openOrder method....')
         #return msg
     
     def openOrderEnd(self):
@@ -2080,7 +2097,8 @@ class IBStore(with_metaclass(MetaSingleton, object)):
     
     def orderStatus(self, msg):
         '''Receive the event ``orderStatus``'''
-        self.broker.push_orderstatus(msg)
+        if self.broker:
+            self.broker.push_orderstatus(msg)
     
     def commissionReport(self, commissionReport):
         '''Receive the event commissionReport'''
@@ -2388,4 +2406,16 @@ class IBStore(with_metaclass(MetaSingleton, object)):
             #return self.ordersdf   
             
     def turnkey_get_last_id(self):
+        self.receive_order_id_complete = False
+        self.conn.reqIds(-1)
+        k = 0
+        time.sleep(.2)
+        while self.receive_order_id_complete == False:
+            k += 1
+            if k > 10:
+                print('leaving early')
+                break
+            time.sleep(.1)
+
+        
         return self.last_order_id
