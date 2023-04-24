@@ -675,6 +675,8 @@ class IBStore(with_metaclass(MetaSingleton, object)):
         ('timeoffset', True),  # Use offset to server for timestamps if needed
         ('timerefresh', 60.0),  # How often to refresh the timeoffset
         ('indcash', True),  # Treat IND codes as CASH elements
+        ('telegram', False), #turn on the telegram interface
+        ('telegram_key', None),
     )
 
     @classmethod
@@ -768,6 +770,15 @@ class IBStore(with_metaclass(MetaSingleton, object)):
             self.apiThread.start()
         except Exception as e:
             print(f"TWS Failed to connect: {e}")
+            
+        try:
+            if self.p.telegram == True:
+                thread = threading.Thread(target=self.run_in_thread)
+                thread.start()
+                
+        except:
+            print('There was an error with the telegram thread')
+            #raise
 
         # This utility key function transforms a barsize into a:
         #   (Timeframe, Compression) tuple which can be sorted
@@ -798,14 +809,13 @@ class IBStore(with_metaclass(MetaSingleton, object)):
         for barsize in self.revdur:
             self.revdur[barsize].sort(key=key2fn)
 
-    
+    def run_in_thread(self):
+        instance = ti.TelegramEcho(self,self.p.telegram_key)
+        instance.run()
+        
     def start(self, data=None, broker=None):
         
-        try:
-            te = ti.TelegramEcho(self,'maythiswork')
-            te.run()
-        except:
-            raise
+
             
         logger.info(f"START data: {data} broker: {broker}")
         self.reconnect(fromstart=True)  # reconnect should be an invariant
