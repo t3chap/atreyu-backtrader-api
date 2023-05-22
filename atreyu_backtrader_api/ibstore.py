@@ -746,12 +746,15 @@ class IBStore(with_metaclass(MetaSingleton, object)):
         self.orderq = queue.Queue()
         self.receive_order_complete = False
         self.acctq = queue.Queue()
+        #self.positions = []
+        self.positionq = queue.Queue()
         self.receive_acct_complete = False
         self.accounts = {}
         self.last_order_id = None
         self.receive_order_id_complete = False
         self.receive_next_id_complete = False
         self.m = 0
+        self.receive_positions_complete = False
 
 
         #Chapman edits @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
@@ -775,6 +778,7 @@ class IBStore(with_metaclass(MetaSingleton, object)):
             if self.p.telegram == True:
                 thread = threading.Thread(target=self.run_in_thread)
                 thread.start()
+                pass
                 
         except:
             print('There was an error with the telegram thread')
@@ -2076,8 +2080,8 @@ class IBStore(with_metaclass(MetaSingleton, object)):
     
     def openOrder(self, msg):
         '''Receive the event ``openOrder`` events'''
-        print('ibbroker openOprder message follows:....')
-        print(msg)
+        #print('ibbroker openOprder message follows:....')
+        #print(msg)
         
         # return msg
         try:
@@ -2118,33 +2122,79 @@ class IBStore(with_metaclass(MetaSingleton, object)):
         '''Proxy to reqPositions'''
         self.conn.reqPositions()
         
+    # def position(self,account: str, contract, position, avgCost):
+    #     #super().position(account, contract, position, avgCost)
+    #     print("Position.", "Account:", account, "Symbol:", contract.symbol, "SecType:",
+    #     contract.secType, "Currency:", contract.currency,
+    #     "Position:", position, "Avg cost:", avgCost)
+        
     def position(self, account, contract, pos, avgCost):
-        '''Receive event positions'''
-        # Lock access to the position dicts. This is called in sub-thread and
-        # can kick in at any time
-        with self._lock_pos:
-            try:
-                if not self._event_accdownload.is_set():  # 1st event seen
-                    position = Position(float(pos), float(avgCost))
-                    logger.debug(f"POSITIONS INITIAL: {self.positions}")
-                    self.positions[contract.conId] = position
-                else:
-                    position = self.positions[contract.conId]
-                    logger.debug(f"POSITION UPDATE: {position}")
-                    if not position.fix(float(pos), avgCost):
-                        err = ('The current calculated position and '
-                            'the position reported by the broker do not match. '
-                            'Operation can continue, but the trades '
-                            'calculated in the strategy may be wrong')
+       '''Receive event positions'''
+       # Lock access to the position dicts. This is called in sub-thread and
+       # can kick in at any time
+#******Chapman addd       
+       if contract.multiplier:        
+           posit = {
+                'symbol': contract.symbol,  
+                'account': account,
+                'type': contract.secType,
+                #'locsymbol': contract.localSymbol,
+                'multiplier':contract.multiplier,
+                'expire_date': contract.lastTradeDateOrContractMonth,
+                'quantity': pos, 
+                'entryprice': (avgCost / float(contract.multiplier)),
+                #'last': self.get_last_price(contract),
+               
+                }
+           #last_price = self.get_last_price(contract)
+           #print('contract: {}' .format(contract.symbol, contract.secType,contract.exchange,contract.currency,contract.lastTradeDateOrContractMonth))
+           #if contract.symbol == 'ZM':
+           #    last_price = self.get_last_price((contract))
+           #    print('last_price: {}' . format(last_price))
+       else:
+           posit = {
+                'symbol': contract.symbol,  
+                'account': account,
+                'type': contract.secType,
+                #'locsymbol': contract.localSymbol,
+                'multiplier':contract.multiplier,
+                'expire_date': contract.lastTradeDateOrContractMonth,
+                'quantity': pos, 
+                #'entryprice': (avg_cost / float(contract.multiplier)),
+                'entryprice': avgCost,
+                #'last': "",
+                }            
+       #print(pos)
+       #self.positions.append(posit)
+       self.positionq.put(posit)           
+      
+#****end chapman add       
+      
+      
+       with self._lock_pos:
+           try:
+               if not self._event_accdownload.is_set():  # 1st event seen
+                   position = Position(float(pos), float(avgCost))
+                   logger.debug(f"POSITIONS INITIAL: {self.positions}")
+                   self.positions[contract.conId] = position
+               else:
+                   position = self.positions[contract.conId]
+                   logger.debug(f"POSITION UPDATE: {position}")
+                   if not position.fix(float(pos), avgCost):
+                       err = ('The current calculated position and '
+                           'the position reported by the broker do not match. '
+                           'Operation can continue, but the trades '
+                           'calculated in the strategy may be wrong')
 
-                        self.notifs.put((err, (), {}))
+                       self.notifs.put((err, (), {}))
 
-                    # self.broker.push_portupdate()
-            except Exception as e:
-                logger.exception(f"Exception: {e}")
+                   # self.broker.push_portupdate()
+           except Exception as e:
+               logger.exception(f"Exception: {e}")
 
     def positionEnd(self):
         logger.debug(f"positionEnd")
+        self.receive_positions_complete = True
         
     def reqIds(self, numIds:int):
         """Call this function to request from TWS the next valid ID that
@@ -2429,3 +2479,39 @@ class IBStore(with_metaclass(MetaSingleton, object)):
 
         
         return self.last_order_id
+    
+    def turnkeyGetPositions(self, acct = None, sym = None):
+        n = 0
+        print('getting positions.....for acct: {}' .format(acct))
+        self.receive_positions_complete = False
+        self.positionq.queue.clear()
+        self.conn.cancelPositions()
+        time.sleep(.2)
+        self.reqPositions()        
+        while self.receive_positions_complete == False:
+            n += 1
+            if n > 25:
+                print(f'waiting {n} times for positions')
+                
+                break
+            time.sleep(.1)
+            
+        self.conn.cancelPositions()
+        plist = list(self.positionq.queue)
+        #print(plist)
+        if acct:
+            plist = [d for d in plist if d['account'] == acct]
+        #filter by symbol if passed
+        if sym:
+            plist = [d for d in plist if d['symbol'] == sym]
+        
+        
+        return plist
+        # df = pd.DataFrame(plist)
+        # if acct and not df.empty:
+        #     df_filtered = df[df['account']==acct]
+        #     self.disconnect()
+        #     return df_filtered
+        # else:
+        #     self.disconnect()
+        #     return df    
