@@ -43,6 +43,8 @@ from atreyu_backtrader_api import ibstore
 from backtrader.utils import AutoDict, AutoOrderedDict
 from backtrader.comminfo import CommInfoBase
 
+#import telegram_ibbroker as ti
+
 bytes = bstr  # py2/3 need for ibpy
 
 import logging
@@ -281,8 +283,11 @@ class IBBroker(with_metaclass(MetaIBBroker, BrokerBase)):
         self.ordstatus = collections.defaultdict(dict)
         self.notifs = queue.Queue()  # holds orders which are notified
         self.tonotify = collections.deque()  # hold oids to be notified
+        #from telegram_ibbroker import TelegramEcho
+
 
     def start(self):
+            
         super(IBBroker, self).start()
         self.ib.start(broker=self)
         if self.ib.connected():
@@ -334,6 +339,15 @@ class IBBroker(with_metaclass(MetaIBBroker, BrokerBase)):
         orders_dict = {}
         orders_dict =self.ib.turnkeyGetOrders(sym)
         return orders_dict
+    
+    def get_open_positions(self,acct = None, sym = None):
+        '''wrapper to get the positions from turnkeyGetPositions function in ibstore
+        can pass sym = 'LE' for example to only get LE orders
+        '''
+        pos_dict = {}
+        pos_dict =self.ib.turnkeyGetPositions(acct, sym)
+        return pos_dict
+    
     #Chapman edit @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
     def cancel_by_id(self, id):
         try:
